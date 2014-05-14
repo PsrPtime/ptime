@@ -3,12 +3,13 @@
 #include <math.h>
 #include <string.h>
 
-
-
 typedef struct component {
   double concentration; // Concentration of each component
   double height;        // Height of each component
   double centroid;      // Centroid of each component
+  double concentration_err; // error of Concentration 
+  double height_err;        // error of Height
+  double centroid_err;      // error of Centroid
 } component;
 
 typedef struct polStruct {
@@ -33,7 +34,7 @@ typedef struct tmplStruct {
   char dte[1024];      // Date template made
   char user[1024];   // Person who made the template
   float templateVersion; // Version of template header
-  char source[1024]; // Source name
+  char source[128]; // Source name
   char profileFile[1024]; // Profile file name
   char units[1024];   // Unit definition
   double dedispersed; // = 0 by default
@@ -230,7 +231,8 @@ void readTemplate(char *file,tmplStruct *tmpl)
 double evaluateTemplateComponent(tmplStruct *tmpl,double phi,int chan,int stokes,int comp,double phiRot)
 {
   double result=0;
-  result = tmpl->channel[chan].pol[stokes].comp[comp].height *
+  //result = tmpl->channel[chan].pol[stokes].comp[comp].height *
+  result = fabs(tmpl->channel[chan].pol[stokes].comp[comp].height) *
     exp(tmpl->channel[chan].pol[stokes].comp[comp].concentration*
 	(cos((phi - tmpl->channel[chan].pol[stokes].comp[comp].centroid - phiRot)*2*M_PI)-1));
   return result;
@@ -317,4 +319,3 @@ void saveTemplate(char *fname,tmplStruct *tmpl)
     }
   fclose(fout);
 }
-

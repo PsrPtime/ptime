@@ -18,26 +18,66 @@
 // This program can load a PSRFITS file that has been completely time scrunched (nsub = 1)
 // It can process multiple polarisation states and multiple frequency channels
 // G. Hobbs (V1.0 Dec 25th 2013)
-//
+// S. Dai (V1.01 May 14th 2014)
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
 #include <float.h>
-#include "ptimeLib.h"
+#include "ptime.h"
 #include "readPfits.h"
 #include <cpgplot.h>
 #include "fitsio.h"
+#include <gsl/gsl_rng.h>
+#include <gsl/gsl_randist.h>
+#include <gsl/gsl_vector.h>
+#include <gsl/gsl_blas.h>
+#include <gsl/gsl_multifit_nlin.h>
 
 #define MAX_COMPONENTS 64 // Maximum number of components per polarisation per frequency channel
 int global_nComp;
 
+typedef struct ptime_pol {
+  int nbin;
+  float *val;
+  double devi;
+} ptime_pol;
+
+typedef struct ptime_chan {
+  int npol;
+  ptime_pol *pol;
+} ptime_chan;
+
+typedef struct ptime_observation {
+  int nchan;
+  ptime_chan *chan; 
+} ptime_observation;
+
+struct data {
+	size_t n;
+	int nComp;
+	double *x;
+	double *y;
+	double *sigma;
+};
 
 double nonlinearFunc( double x, const double *par);
+void allocateObsMemory(ptime_observation *obs,pheader *phead);
+void deallocateMemory(ptime_observation *obs);
+void readData(ptime_observation *obs,pheader *phead,fitsfile *fp);
 void plot(ptime_observation *obs,pheader *phead,tmplStruct *tmpl);
 void findMinMax(float *y,int n,float *min,float *max);
+void removeBaseline(ptime_observation *obs,pheader *phead,int baselineType,float baselineFrac);
 void startNewTemplate(tmplStruct *tmpl,pheader *phead);
 void doFit(float *fx,float *fy,int nbin,tmplStruct *tmpl,int chan,int pol);
+
+int Mises_f (const gsl_vector *x, void *data, gsl_vector *f);
+int Mises_df (const gsl_vector *x, void *data, gsl_matrix *J);
+int Mises_fdf (const gsl_vector *x, void *data, gsl_vector *f, gsl_matrix *J);
+void doFit_err(float *fx,float *fy, double devi, int nbin,tmplStruct *tmpl,int chan,int pol);
+void print_state (size_t iter, gsl_multifit_fdfsolver * s);
+
+void updateTemplateHeader(tmplStruct *tmpl,pheader *phead);
 
 int main(int argc,char *argv[])
 {
@@ -95,6 +135,9 @@ void startNewTemplate(tmplStruct *tmpl,pheader *phead)
   double f1,f2;
   double fa,fb;
 
+  strcpy(tmpl->source,phead->source);
+  //printf ("%s\n", tmpl->source);
+
   tmpl->nchan = nchan;
   // Should set up user/date etc.
   for (i=0;i<nchan;i++)
@@ -115,6 +158,163 @@ void startNewTemplate(tmplStruct *tmpl,pheader *phead)
     }
 }
 
+void updateTemplateHeader(tmplStruct *tmpl,pheader *phead)
+{
+  int npol = phead->npol;
+  int nchan = phead->nchan;
+  int i,j;
+  double f0 = phead->freq - phead->bw/2.0;
+  double f1,f2;
+  double fa,fb;
+
+  strcpy(tmpl->source,phead->source);
+
+  tmpl->nchan = nchan;
+  // Should set up user/date etc.
+  for (i=0;i<nchan;i++)
+    {
+      tmpl->channel[i].nstokes = npol;
+      fa = f0 + i*phead->bw/phead->nchan - (phead->bw/phead->nchan)/2.0;
+      fb = f0 + i*phead->bw/phead->nchan + (phead->bw/phead->nchan)/2.0;
+      if (fa < fb) {f1=fa; f2=fb;}
+      else {f1=fb; f2=fa;}
+      tmpl->channel[i].freqLow = f1;
+      tmpl->channel[i].freqHigh = f2;
+      // Should set up frequency range here
+      for (j=0;j<npol;j++)
+	{
+	  tmpl->channel[i].pol[j].stokes = j;
+	}
+    }
+}
+
+void removeBaseline(ptime_observation *obs,pheader *phead,int baselineType,float baselineFrac)
+{
+	int nchan,npol,nbin;
+	int i,j,k,k0,k1,it;
+	double bl,bl_best;
+	int setbl=0;
+	int best_k0=0;
+
+	double devi;
+
+	nchan = phead->nchan;
+	nbin = phead->nbin;
+	npol = phead->npol;
+
+	for (i=0;i<nchan;i++)
+    {
+		for (j=0;j<npol;j++)
+		{
+			if (j==0) 
+			{
+				setbl=0;
+	  
+				for (k0=0;k0<nbin;k0++)
+				{
+					for (it = 0; it < baselineFrac*nbin; it++)
+					{
+						bl=0;
+						k1 = k0+it;
+						if (k1 > nbin) k1 = k1-nbin;
+		    
+						if (k1 > k0) 
+						{
+							for (k=k0;k<k1;k++)
+								bl += obs->chan[i].pol[j].val[k];
+						}
+						else if (k1 < k0) 
+						{
+							for (k=k0;k<nbin;k++)
+								bl += obs->chan[i].pol[j].val[k];
+							for (k=0;k<k1;k++)
+								bl += obs->chan[i].pol[j].val[k];
+						}
+					}
+					if (setbl==0) {bl_best = bl; setbl=1;}
+					else 
+					{
+						if (bl_best > bl) {bl_best = bl; best_k0=k0;}
+					}
+				}
+				bl_best = bl_best/(baselineFrac*nbin);
+
+				devi = 0.0;
+				for (it = 0; it < baselineFrac*nbin; it++)
+				{
+					k1 = best_k0 + it;
+					if (k1 > nbin) k1 = k1-nbin;
+		    
+					if (k1 > best_k0) 
+					{
+						for (k = best_k0; k < k1; k++)
+							devi += (obs->chan[i].pol[j].val[k]-bl_best)*(obs->chan[i].pol[j].val[k]-bl_best);
+					}
+					else if (k1 < best_k0) 
+					{
+						for (k = best_k0; k < nbin; k++)
+							devi += (obs->chan[i].pol[j].val[k]-bl_best)*(obs->chan[i].pol[j].val[k]-bl_best);
+						for (k = 0; k < k1; k++)
+							devi += (obs->chan[i].pol[j].val[k]-bl_best)*(obs->chan[i].pol[j].val[k]-bl_best);
+					}
+				}
+				devi = sqrt(devi/(baselineFrac*nbin));
+			} 
+			else 
+			{
+				bl = 0;
+				for (it = 0; it < baselineFrac*nbin; it++)
+				{
+					bl=0;
+					k1 = best_k0+it;
+					if (k1 > nbin) k1 = k1-nbin;
+		
+					if (k1 > best_k0) 
+					{
+						for (k=best_k0;k<k1;k++)
+							bl += obs->chan[i].pol[j].val[k];
+					}
+					else if (k1 < best_k0) 
+					{
+						for (k=k0;k<nbin;k++)
+							bl += obs->chan[i].pol[j].val[k];
+						for (k=0;k<k1;k++)
+							bl += obs->chan[i].pol[j].val[k];
+					}
+				}
+				bl_best = bl;
+				bl_best = bl_best/(baselineFrac*nbin);
+
+				devi = 0.0;
+				for (it = 0; it < baselineFrac*nbin; it++)
+				{
+					k1 = best_k0 + it;
+					if (k1 > nbin) k1 = k1-nbin;
+		    
+					if (k1 > best_k0) 
+					{
+						for (k = best_k0; k < k1; k++)
+							devi += (obs->chan[i].pol[j].val[k]-bl_best)*(obs->chan[i].pol[j].val[k]-bl_best);
+					}
+					else if (k1 < best_k0) 
+					{
+						for (k = best_k0; k < nbin; k++)
+							devi += (obs->chan[i].pol[j].val[k]-bl_best)*(obs->chan[i].pol[j].val[k]-bl_best);
+						for (k = 0; k < k1; k++)
+							devi += (obs->chan[i].pol[j].val[k]-bl_best)*(obs->chan[i].pol[j].val[k]-bl_best);
+					}
+				}
+				devi = sqrt(devi/(baselineFrac*nbin));
+			}
+
+			for (k = 0; k < nbin; k++)
+			{
+				(obs->chan[i].pol[j].val[k]) -= bl_best;
+			}
+			(obs->chan[i].pol[j].devi) = devi;
+		}
+	}
+}
 
 void plot(ptime_observation *obs,pheader *phead,tmplStruct *tmpl)
 {
@@ -206,7 +406,7 @@ void plot(ptime_observation *obs,pheader *phead,tmplStruct *tmpl)
     cpgbox("BCTSN",0.0,0,"BCTSN",0.0,0);
     cpglab("Phase","prof-tmpl","");
     cpgbin(nbin*2,fx,dy,1);
-    cpgband(6,0,0,0,&mx,&my,&key);
+    cpgcurs(&mx,&my,&key);
     if (key=='c'){
       int ochan = chan;
       printf("Current channel = %d (from 0 to %d). Please enter new channel number: ",chan,nchan-1);
@@ -229,6 +429,7 @@ void plot(ptime_observation *obs,pheader *phead,tmplStruct *tmpl)
       scanf("%s",fname);
       printf("Trying to load\n");
       readTemplate(fname,tmpl);
+	  updateTemplateHeader(tmpl,phead);
       printf("Completed load\n");
     }
     else if (key=='p'){
@@ -262,6 +463,8 @@ void plot(ptime_observation *obs,pheader *phead,tmplStruct *tmpl)
       zoom=0;
     else if (key=='f')
       {doFit(fx,fy,nbin,tmpl,chan,pol);saved=0;}
+    else if (key=='F')
+      {doFit_err(fx,fy,obs->chan[chan].pol[pol].devi,nbin,tmpl,chan,pol);saved=0;}
     else if (key=='z') {
       float mx2,my2;
       cpgband(4,0,mx,my,&mx2,&my2,&key);
@@ -333,7 +536,99 @@ void findMinMax(float *y,int n,float *min,float *max)
     }
 }
 
+void readData(ptime_observation *obs,pheader *phead,fitsfile *fp)
+{
+  int status=0;
+  int i,j,k,l;
+  int initflag=0;
+  int nval=0;
+  int colnum;
+  int nchan,nbin,npol;
+  float ty[phead->nbin];
+  float datScl[phead->nchan*phead->npol];
+  float datOffs[phead->nchan*phead->npol];
+  nchan = phead->nchan;
+  nbin = phead->nbin;
+  npol = phead->npol;
 
+  //
+  fits_movnam_hdu(fp,BINARY_TBL,(char *)"SUBINT",1,&status);
+  if (status) {
+    printf("Unable to move to subint table in FITS file\n");
+    exit(1);
+  }
+  fits_get_colnum(fp,CASEINSEN,(char *)"DAT_SCL",&colnum,&status);
+  if (status) {
+    printf("Unable to find DAT_SCL in the subint table in FITS file\n");
+    exit(1);
+  }
+  fits_read_col_flt(fp,colnum,1,1,phead->nchan*phead->npol,nval,datScl,&initflag,&status);
+
+
+  fits_get_colnum(fp,CASEINSEN,(char *)"DAT_OFFS",&colnum,&status);
+  if (status) {
+    printf("Unable to find DAT_OFFS in the subint table in FITS file\n");
+    exit(1);
+  }
+  fits_read_col_flt(fp,colnum,1,1,phead->nchan*phead->npol,nval,datOffs,&initflag,&status);
+
+  fits_get_colnum(fp,CASEINSEN,(char *)"DATA",&colnum,&status);  
+  if (status) {
+    printf("Unable to find data in the subint table in FITS file\n");
+    exit(1);
+  }
+
+  for (j=0;j<npol;j++)
+    {
+      for (i=0;i<nchan;i++)
+	{
+	  fits_read_col_flt(fp,colnum,1,j*(nchan*nbin)+i*nbin+1,nbin,nval,ty,&initflag,&status);
+	  for (k=0;k<nbin;k++)
+	    {
+	      obs->chan[i].pol[j].val[k] = (ty[k]+datOffs[j*nchan+i])*datScl[j*nchan+i];
+	    }
+	}
+    }
+}
+
+void allocateObsMemory(ptime_observation *obs,pheader *phead)
+{
+  int nbin,nchan,npol;
+  int i,j;
+
+  nchan = phead->nchan;
+  npol  = phead->npol;
+  nbin  = phead->nbin;
+
+  obs->chan = (ptime_chan *)malloc(sizeof(ptime_chan)*nchan);
+  obs->nchan = nchan;
+  for (i=0;i<nchan;i++)
+    {
+      obs->chan[i].pol = (ptime_pol *)malloc(sizeof(ptime_pol)*npol);
+      obs->chan[i].npol = npol;
+      for (j=0;j<npol;j++)
+	{
+	  obs->chan[i].pol[j].val = (float *)malloc(sizeof(float)*nbin);
+	  obs->chan[i].pol[j].nbin = nbin;
+	}
+    }
+}
+
+void deallocateMemory(ptime_observation *obs)
+{
+  int i,j;
+  for (i=0;i<obs->nchan;i++)
+    {
+      for (j=0;j<obs->chan[i].npol;j++)
+	{
+	  
+	  free(obs->chan[i].pol[j].val);
+	}
+      free(obs->chan[i].pol);
+    }
+  free(obs->chan);
+  free(obs);
+}
 
 
 // Routines for the fitting
@@ -1714,3 +2009,193 @@ void lm_qrsolv(int n, double *r, int ldr, int *ipvt, double *diag,
 	x[ipvt[j]] = wa[j];
 
 } /*** lm_qrsolv. ***/
+
+/**************************************************************/
+
+int Mises_f (const gsl_vector *x, void *data, gsl_vector *f)
+{
+	size_t n = ((struct data *)data)->n;  // n is the nbin
+	int nComp = ((struct data *)data)->nComp;
+	double *t = ((struct data *)data)->x;
+	double *y = ((struct data *)data)->y;
+	double *sigma = ((struct data *)data)->sigma;
+
+	double result;
+	int i, k;
+	for (i = 0; i < n; i++)
+	{
+		result = 0.0;
+		for (k = 0; k < nComp; k++)
+		{
+			result += fabs((gsl_vector_get(x,3*k)))*exp(gsl_vector_get(x,3*k+1)*(cos((t[i]-(gsl_vector_get(x,3*k+2)))*2*M_PI)-1));
+			//result += fabs(par[3*k+0])*exp(par[3*k+1]*(cos((x-(par[3*k+2]))*2*M_PI)-1));
+			//result += par[3*k+0]*exp(par[3*k+1]*(cos((x-(par[3*k+2]))*2*M_PI)-1));
+		}
+		gsl_vector_set (f, i, (result - y[i])/sigma[i]);
+	}
+
+	return GSL_SUCCESS;
+}
+
+int Mises_df (const gsl_vector *x, void *data, gsl_matrix *J)
+{
+	size_t n = ((struct data *)data)->n;  // n is the nbin
+	int nComp = ((struct data *)data)->nComp;
+	double *t = ((struct data *)data)->x;
+	double *y = ((struct data *)data)->y;
+	double *sigma = ((struct data *)data)->sigma;
+
+	int i, k;
+	for (i = 0; i < n; i++)
+	{
+		for (k = 0; k < nComp; k++)
+		{
+			double phase = t[i];
+			double s = sigma[i];
+			double e1;
+			//double e1 = exp(gsl_vector_get(x,3*k+1)*(cos((t[i]-(gsl_vector_get(x,3*k+2)))*2*M_PI)-1));
+			if (gsl_vector_get(x,3*k) >= 0)
+			{
+				e1 = exp(gsl_vector_get(x,3*k+1)*(cos((t[i]-(gsl_vector_get(x,3*k+2)))*2*M_PI)-1));
+			}
+			else
+			{
+				e1 = -exp(gsl_vector_get(x,3*k+1)*(cos((t[i]-(gsl_vector_get(x,3*k+2)))*2*M_PI)-1));
+			}
+			double e2 = (gsl_vector_get(x,3*k))*(cos((t[i]-(gsl_vector_get(x,3*k+2)))*2*M_PI)-1)*exp(gsl_vector_get(x,3*k+1)*(cos((t[i]-(gsl_vector_get(x,3*k+2)))*2*M_PI)-1));
+			double e3 = (gsl_vector_get(x,3*k))*exp(gsl_vector_get(x,3*k+1)*(cos((t[i]-(gsl_vector_get(x,3*k+2)))*2*M_PI)-1))*(gsl_vector_get(x,3*k+1)*sin((t[i]-(gsl_vector_get(x,3*k+2)))*2*M_PI)*2*M_PI);
+			gsl_matrix_set(J,i,3*k, e1/s);
+			gsl_matrix_set(J,i,3*k+1, e2/s);
+			gsl_matrix_set(J,i,3*k+2, e3/s);
+		}
+	}
+	return GSL_SUCCESS;
+}
+
+int Mises_fdf (const gsl_vector *x, void *data, gsl_vector *f, gsl_matrix *J)
+{
+	Mises_f (x, data, f);
+	Mises_df (x, data, J);
+	return GSL_SUCCESS;
+}
+
+// Do the non-linear fit of the components, and also output the error of parameters
+void doFit_err(float *fx,float *fy, double devi, int nbin,tmplStruct *tmpl,int chan,int pol)
+{
+	double pval[tmpl->channel[chan].pol[pol].nComp*3];
+	double datX[nbin],datY[nbin];
+	double sigma[nbin];
+	unsigned int i;
+	int nFit;
+
+	nFit = tmpl->channel[chan].pol[pol].nComp*3;
+
+	// Fit for all parameters of all components
+	for (i=0;i<tmpl->channel[chan].pol[pol].nComp;i++)
+    {
+		pval[3*i] = tmpl->channel[chan].pol[pol].comp[i].height;
+		pval[3*i+1] = tmpl->channel[chan].pol[pol].comp[i].concentration;
+		pval[3*i+2] = tmpl->channel[chan].pol[pol].comp[i].centroid;
+    }
+	// Fill up the fitting array
+	for (i=0;i<nbin;i++)
+    {
+		datX[i] = (double)fx[i];
+		datY[i] = (double)fy[i];
+		sigma[i] = devi;
+		//printf ("%lf\n",sigma[i]);
+    }
+
+	int nComp = tmpl->channel[chan].pol[pol].nComp;
+	//global_nComp = tmpl->channel[chan].pol[pol].nComp;
+
+	struct data dat = {nbin, nComp, datX, datY, sigma}; 
+
+	// Initialize the solver
+	const gsl_multifit_fdfsolver_type *T;
+	gsl_multifit_fdfsolver *s;
+	int status;
+	unsigned int iter = 0;
+	const size_t n = nbin;
+	const size_t p = nFit;
+
+	gsl_matrix *covar = gsl_matrix_alloc (p, p);
+	gsl_multifit_function_fdf f;
+
+	//double x_init[nFit] = { 1.0, 0.0, 0.0 };
+	gsl_vector_view x = gsl_vector_view_array (pval, p); // pval is the x_init
+
+	const gsl_rng_type * type;
+	gsl_rng * r;
+	gsl_rng_env_setup();
+
+	type = gsl_rng_default;
+	r = gsl_rng_alloc (type);
+
+	f.f = &Mises_f;
+	f.df = &Mises_df;
+	f.fdf = &Mises_fdf;
+	f.n = n;
+	f.p = p;
+	f.params = &dat;
+
+	T = gsl_multifit_fdfsolver_lmsder;
+	s = gsl_multifit_fdfsolver_alloc (T, n, p);
+	gsl_multifit_fdfsolver_set (s, &f, &x.vector);
+	//print_state (iter, s);
+	do
+	{
+		iter++;
+		status = gsl_multifit_fdfsolver_iterate (s);
+		//printf ("status = %s\n", gsl_strerror (status));
+		//print_state (iter, s);
+		if (status)
+			break;
+		status = gsl_multifit_test_delta (s->dx, s->x,
+				1e-4, 1e-4);
+	}
+	while (status == GSL_CONTINUE && iter < 500);
+	gsl_multifit_covar (s->J, 0.0, covar);
+
+	#define FIT(i) gsl_vector_get(s->x, i)
+	#define ERR(i) sqrt(gsl_matrix_get(covar,i,i))
+
+	double chi = gsl_blas_dnrm2(s->f);
+	double dof = n - p;
+	double c = GSL_MAX_DBL(1, chi / sqrt(dof));
+	//printf("chisq/dof = %g\n", pow(chi, 2.0) / dof);
+	//printf ("A = %.5f +/- %.5f\n", FIT(0), c*ERR(0));
+	//printf ("lambda = %.5f +/- %.5f\n", FIT(1), c*ERR(1));
+	//printf ("b = %.5f +/- %.5f\n", FIT(2), c*ERR(2));
+	//printf ("status = %s\n", gsl_strerror (status));
+
+	// Update components from the fit
+	for (i=0;i<nFit/3;i++)
+		printf("Fit results: %g (%g) %g (%g) %g (%g)\n", FIT(3*i), c*ERR(3*i), FIT(3*i+1), c*ERR(3*i+1), FIT(3*i+2), c*ERR(3*i+2));
+
+	for (i=0;i<tmpl->channel[chan].pol[pol].nComp;i++)
+    {
+		tmpl->channel[chan].pol[pol].comp[i].height = FIT(3*i);
+		tmpl->channel[chan].pol[pol].comp[i].height_err = c*ERR(3*i);
+		tmpl->channel[chan].pol[pol].comp[i].concentration = FIT(3*i+1);
+		tmpl->channel[chan].pol[pol].comp[i].concentration_err = c*ERR(3*i+1);
+		tmpl->channel[chan].pol[pol].comp[i].centroid = FIT(3*i+2);
+		tmpl->channel[chan].pol[pol].comp[i].centroid_err = c*ERR(3*i+2);
+    }
+
+	gsl_multifit_fdfsolver_free (s);
+	gsl_matrix_free (covar);
+	gsl_rng_free (r);
+}
+
+void print_state (size_t iter, gsl_multifit_fdfsolver * s)
+{
+	printf ("iter: %3u x = % 15.8f % 15.8f % 15.8f "
+			"|f(x)| = %g\n",
+			iter,
+			gsl_vector_get (s->x, 0),
+			gsl_vector_get (s->x, 1),
+			gsl_vector_get (s->x, 2),
+			gsl_blas_dnrm2 (s->f));
+}
+

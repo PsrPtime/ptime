@@ -30,37 +30,8 @@ typedef struct pheader {
   float period;   // Pulsar's period (s)   
   char obsMode[128]; // PSR, CAL, SEARCH
   char source[128];
-  char telescope[128]; // Telescope name
 } pheader;
 
 void closeFitsFile(fitsfile *fp);
 fitsfile * openFitsFile(char *fname);
 void loadPrimaryHeader(fitsfile *fp,pheader *phead);
-fitsfile * openFitsFile_readWrite(char *fname);
-
-typedef struct ptime_pol {
-  int nbin;
-  float *val;
-  double baselineVal;
-  int baseline_b0;
-  int baseline_b1;
-  double sdev;
-} ptime_pol;
-
-typedef struct ptime_chan {
-  int npol;
-  ptime_pol *pol;
-} ptime_chan;
-
-typedef struct ptime_observation {
-  int nchan;
-  ptime_chan *chan; 
-} ptime_observation;
-
-
-void allocateObsMemory(ptime_observation *obs,pheader *phead);
-void deallocateMemory(ptime_observation *obs);
-void readData(ptime_observation *obs,pheader *phead,fitsfile *fp);
-void removeBaseline(ptime_observation *obs,pheader *phead,int baselineType,float baselineFrac);
-void readSubintOffs(ptime_observation *obs,double *offs_sub,fitsfile *fp);
-void readDatFreq(ptime_observation *obs,double *datFreq,fitsfile *fp,int nchan);

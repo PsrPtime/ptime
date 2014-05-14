@@ -12,12 +12,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "ptimeLib.h"
+#include "ptime.h"
 #include <cpgplot.h>
 
 // Program to plot templates
 
-void plotIt(tmplStruct *tmpl,int nbin,char *grDev,int plot,int plotComponents);
+void plot(tmplStruct *tmpl,int nbin);
 void findMinMax(int n,float *y,float *miny,float *maxy);
 void findMinMax4(int n,float *y1,float *y2,float *y3,float *y4,float *miny,float *maxy);
 
@@ -27,9 +27,6 @@ int main(int argc,char *argv[])
   int i;
   int nbin = 1024;
   char fname[128];
-  char grDev[128]="/xs";
-  int plot=-1;
-  int plotComponents=0;
 
   for (i=0;i<argc;i++)
     {
@@ -37,23 +34,17 @@ int main(int argc,char *argv[])
 	strcpy(fname,argv[++i]);
       else if (strcmp(argv[i],"-nbin")==0)
 	sscanf(argv[++i],"%d",&nbin);
-      else if (strcmp(argv[i],"-g")==0)
-	strcpy(grDev,argv[++i]);
-      else if (strcmp(argv[i],"-plot")==0)
-	sscanf(argv[++i],"%d",&plot);
-      else if (strcmp(argv[i],"-pc")==0)
-	plotComponents=1;
     }
 
   initialiseTemplate(&tmpl);
   printf("Reading template\n");
   readTemplate(fname,&tmpl); 
   printf("Complete reading template\n");
-  plotIt(&tmpl,nbin,grDev,plot,plotComponents);
+  plot(&tmpl,nbin);
   // Must deallocate the template memory
 }
 
-void plotIt(tmplStruct *tmpl,int nbin,char *grDev,int plot,int plotComponents)
+void plot(tmplStruct *tmpl,int nbin)
 {
   float *fx;
   float *pol1,*pol2,*pol3,*pol4,*lin,*tpol,*pa,*pa_x;
@@ -66,27 +57,24 @@ void plotIt(tmplStruct *tmpl,int nbin,char *grDev,int plot,int plotComponents)
   float mx,my;
   char key;
   double phi;
-
+  int plotComponents=0;
   int i,j;
   int channel=0;
   int pol=0;
   int nchan = tmpl->nchan;
   int npol = tmpl->channel[0].nstokes; 
-  //  int plot=1;
+  int plot=1;
   int zoom=0;
   double smallVal = 0.1;
 
-  if (plot==-1)
+  if (nchan == 1 && npol == 1)
     {
-      if (nchan == 1 && npol == 1)
-	{
-	  plot = 1;
-	  plotComponents=1;
-	}
-      else
-	{
-	  plot = 3;
-	}
+      plot = 1;
+      plotComponents=1;
+    }
+  else
+    {
+      plot = 3;
     }
   fx = (float *)malloc(sizeof(float)*nbin);
   pol1 = (float *)malloc(sizeof(float)*nbin);
@@ -104,10 +92,9 @@ void plotIt(tmplStruct *tmpl,int nbin,char *grDev,int plot,int plotComponents)
 
   sprintf(yaxis,"Amplitude (%s)",tmpl->units);
 
-  cpgbeg(0,grDev,1,1);
+  cpgbeg(0,"/xs",1,1);
   cpgsch(1.4);
   cpgscf(2);
-  cpgslw(3);
   cpgask(0);
     
 
@@ -227,20 +214,13 @@ void plotIt(tmplStruct *tmpl,int nbin,char *grDev,int plot,int plotComponents)
 	    n0=0;
 	    for (phi=0;phi<1;phi+=1.0/(double)nbin)
 	      {
-		if (tmpl->channel[i].pol[pol].nComp == 0)
-		  fyc[n0] = 0.0;
-		else
-		  fyc[n0] = (float)evaluateTemplateChannel(tmpl,phi,i,pol,phiRot);
+		fyc[n0] = (float)evaluateTemplateChannel(tmpl,phi,i,pol,phiRot);
 		n0++;
 	      }
 	    findMinMax(n0,fyc,&tminy,&tmaxy);
-	    printf("Using %d %g %g\n",i,tminy,tmaxy);
 	    for (j=0;j<n0;j++)
 	      {
-		if (tmpl->channel[i].pol[pol].nComp == 0)
-		  fyc[j] = 0.0;
-		else
-		  fyc[j]=(fyc[j]-tminy)/(tmaxy-tminy) + i;
+		fyc[j]=(fyc[j]+tminy)/(tmaxy-tminy) + i;
 	      }
 	    cpgsci(1); cpgline(n0,fx,fyc);
 	  }
@@ -282,53 +262,39 @@ void plotIt(tmplStruct *tmpl,int nbin,char *grDev,int plot,int plotComponents)
       }
 	
 
-    if (strcmp(grDev,"/xs")==0)
-      {
-	cpgcurs(&mx,&my,&key);
-	if (key=='r'){
-	  printf("Current rotation is %g (phase). Please enter new rotation ",phiRot);
-	  scanf("%lf",&phiRot);
-	}
-	else if (key=='s'){
-	  printf("The small value used for determining PA is set to: %g.  What value would you like? ",smallVal);
-	  scanf("%lf",&smallVal);
-	}
-	else if (key=='1') plot = 1;
-	else if (key=='2') plot = 2;
-	else if (key=='3') plot = 3;
-	else if (key=='4') plot = 4;
-	else if (key=='5') plot = 5;
-	else if (key=='6') plot = 6;
-	else if (key=='z')
-	  {
-	    float mx2,my2;
-	    cpgband(2,0,mx,my,&mx2,&my2,&key);
-	    if (mx2 < mx) minx = mx2;
-	    else minx = mx;
-	    if (mx2 > mx) maxx = mx2;
-	    else maxx = mx;
-	    
-	    if (my2 < my) miny = my2;
-	    else miny = my;
-	    if (my2 > my) maxy = my2;
-	    else maxy = my;
-	    zoom=1;
-	  }
-	else if (key=='u')
-	  zoom=0;
-	else if (key=='p')
-	  {
-	    printf("Enter polarisation (0->3): current = %d ",pol);
-	    scanf("%d",&pol);
-	  }
-	else if (key=='c')
-	  {
-	    printf("Enter channel (0->%d): current = %d ",tmpl->nchan,channel);
-	    scanf("%d",&channel);
-	  }
-      } else {
-      key='q';
+
+    cpgcurs(&mx,&my,&key);
+    if (key=='r'){
+      printf("Current rotation is %g (phase). Please enter new rotation ",phiRot);
+      scanf("%lf",&phiRot);
     }
+    else if (key=='s'){
+      printf("The small value used for determining PA is set to: %g.  What value would you like? ",smallVal);
+      scanf("%lf",&smallVal);
+    }
+    else if (key=='1') plot = 1;
+    else if (key=='2') plot = 2;
+    else if (key=='3') plot = 3;
+    else if (key=='4') plot = 4;
+    else if (key=='5') plot = 5;
+    else if (key=='6') plot = 6;
+    else if (key=='z')
+      {
+	float mx2,my2;
+	cpgband(2,0,mx,my,&mx2,&my2,&key);
+	if (mx2 < mx) minx = mx2;
+	else minx = mx;
+	if (mx2 > mx) maxx = mx2;
+	else maxx = mx;
+
+	if (my2 < my) miny = my2;
+	else miny = my;
+	if (my2 > my) maxy = my2;
+	else maxy = my;
+	zoom=1;
+      }
+    else if (key=='u')
+      zoom=0;
   } while (key!='q');
     cpgend();
 
