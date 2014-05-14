@@ -1,4 +1,5 @@
 // ptime header file
+// G. Hobbs, S. Dai
 //
 #include <stdio.h>
 #include <stdlib.h>
