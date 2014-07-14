@@ -216,10 +216,13 @@ void readTemplate(char *file,tmplStruct *tmpl)
 	      substr[4]='\0';
 	      if (strcasecmp(substr,"COMP")==0)
 		{
-		  sscanf(line,"%s %lf %lf %lf",dummy,
+		  sscanf(line,"%s %lf %lf %lf %lf %lf %lf",dummy,
 			 &(tmpl->channel[chan].pol[stokes].comp[comp].height),
+			 &(tmpl->channel[chan].pol[stokes].comp[comp].height_err),
 			 &(tmpl->channel[chan].pol[stokes].comp[comp].concentration),
-			 &(tmpl->channel[chan].pol[stokes].comp[comp].centroid));
+			 &(tmpl->channel[chan].pol[stokes].comp[comp].concentration_err),
+			 &(tmpl->channel[chan].pol[stokes].comp[comp].centroid),
+			 &(tmpl->channel[chan].pol[stokes].comp[comp].centroid_err));
 		  comp++;
 		}
 	    }
@@ -314,9 +317,15 @@ void saveTemplate(char *fname,tmplStruct *tmpl)
 	    centre = tmpl->channel[i].pol[j].comp[k].centroid;
 	    if (centre > 1) centre-=1;
 	    if (centre < 0) centre+=1;
-	    fprintf(fout,"COMP%d: %g %g %g\n",k+1,tmpl->channel[i].pol[j].comp[k].height,
+	    fprintf(fout,"COMP%d: %.4lf %.6lf %.4lf %.6lf %.8lf %.10lf\n",k+1,tmpl->channel[i].pol[j].comp[k].height,
+		    tmpl->channel[i].pol[j].comp[k].height_err,
 		    tmpl->channel[i].pol[j].comp[k].concentration,
-		    centre);
+		    tmpl->channel[i].pol[j].comp[k].concentration_err,
+		    centre,
+		    tmpl->channel[i].pol[j].comp[k].centroid_err);
+	    //fprintf(fout,"COMP%d: %g %g %g\n",k+1,tmpl->channel[i].pol[j].comp[k].height,
+	//	    tmpl->channel[i].pol[j].comp[k].concentration,
+	//	    centre);
 	  }
 	}
     }

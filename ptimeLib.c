@@ -269,7 +269,8 @@ void saveTemplate(char *fname,tmplStruct *tmpl)
 	    centre = tmpl->channel[i].pol[j].comp[k].centroid;
 	    if (centre > 1) centre-=1;
 	    if (centre < 0) centre+=1;
-	    fprintf(fout,"COMP%d: %g %g %g\n",k+1,tmpl->channel[i].pol[j].comp[k].height,
+	    //fprintf(fout,"COMP%d: %g %g %g\n",k+1,tmpl->channel[i].pol[j].comp[k].height,
+	    fprintf(fout,"COMP%d: %.4lf %.6lf %.4lf %.6lf %.8lf %.10lf\n",k+1,tmpl->channel[i].pol[j].comp[k].height,
 		    tmpl->channel[i].pol[j].comp[k].concentration,
 		    centre);
 	  }

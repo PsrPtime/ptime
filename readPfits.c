@@ -113,6 +113,7 @@ void loadPrimaryHeader(fitsfile *fp,pheader *phead)
 	  status=0;
 	  printf("Complete reading zero_off\n");
 	  }  */
+			/*
       printf("COMMENTED OUT READING ZERO_OFF AND NBITS IN PFITS.C -- PUT BACK -- PROBLEM WITH SOME FILES\n"); 
       fits_read_key(fp,TINT,(char *)"NBITS",&(phead->nbits),NULL,&status);
       if (status)
@@ -121,6 +122,7 @@ void loadPrimaryHeader(fitsfile *fp,pheader *phead)
 	  fits_report_error(stderr,status);
 	  exit(1);
 	}
+	*/
 
       fits_read_key(fp,TINT,(char *)"NPOL",&(phead->npol),NULL,&status);
       if (status)

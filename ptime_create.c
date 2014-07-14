@@ -34,7 +34,7 @@
 #include <gsl/gsl_blas.h>
 #include <gsl/gsl_multifit_nlin.h>
 
-#define MAX_COMPONENTS 64 // Maximum number of components per polarisation per frequency channel
+#define MAX_COMPONENTS 100 // Maximum number of components per polarisation per frequency channel
 int global_nComp;
 
 typedef struct ptime_pol {
